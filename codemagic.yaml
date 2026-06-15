@@ -1,0 +1,103 @@
+# Build Pausely (macOS) for the Mac App Store on Codemagic.
+# Signing uses an App Store Connect API key + a Mac Installer Distribution cert.
+# Secrets (APP_STORE_CONNECT_*, CERTIFICATE_PRIVATE_KEY, INSTALLER_P12_BASE64,
+# INSTALLER_P12_PASSWORD) are passed when the build is triggered via the API.
+
+workflows:
+  macos-appstore:
+    name: Pausely macOS — App Store
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      vars:
+        BUNDLE_ID: "app.pausely.Pausely"
+        XCODE_PROJECT: "Pausely.xcodeproj"
+        XCODE_SCHEME: "Pausely"
+
+    scripts:
+      - name: Generate Xcode project (XcodeGen)
+        script: |
+          which xcodegen || brew install xcodegen
+          xcodegen generate
+
+      - name: Resolve Swift packages (RevenueCat)
+        script: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME"
+
+      - name: Initialize keychain
+        script: keychain initialize
+
+      - name: Fetch Mac App Store signing files (create if needed)
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --platform MAC_OS \
+            --type MAC_APP_STORE \
+            --certificate-key "@env:CERTIFICATE_PRIVATE_KEY" \
+            --create
+
+      - name: Ensure Mac Installer Distribution certificate
+        script: |
+          app-store-connect certificates create \
+            --type MAC_INSTALLER_DISTRIBUTION \
+            --certificate-key "@env:CERTIFICATE_PRIVATE_KEY" \
+            --save || echo "Installer certificate already available for this key."
+
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+
+      - name: Set up provisioning profiles
+        script: xcode-project use-profiles
+
+      - name: Archive (Release)
+        script: |
+          xcodebuild -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -archivePath "$CM_BUILD_DIR/Pausely.xcarchive" \
+            CURRENT_PROJECT_VERSION=$BUILD_NUMBER \
+            archive
+
+      - name: Import installer certificate (.p12)
+        script: |
+          set -e
+          echo "$INSTALLER_P12_BASE64" | base64 --decode > /tmp/installer.p12
+          MYKC="$HOME/pausely-installer.keychain-db"
+          MYPW="pausely"
+          security create-keychain -p "$MYPW" "$MYKC"
+          security set-keychain-settings -lut 21600 "$MYKC"
+          security unlock-keychain -p "$MYPW" "$MYKC"
+          security import /tmp/installer.p12 -k "$MYKC" -P "$INSTALLER_P12_PASSWORD" -A -T /usr/bin/productbuild -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MYPW" "$MYKC"
+          EXISTING=$(security list-keychains -d user | sed 's/[" ]//g' | tr '\n' ' ')
+          security list-keychains -d user -s "$MYKC" $EXISTING
+          security find-identity -v -p basic "$MYKC" || true
+
+      - name: Build signed installer .pkg (productbuild)
+        script: |
+          set -e
+          mkdir -p "$CM_BUILD_DIR/export"
+          APP_PATH="$CM_BUILD_DIR/Pausely.xcarchive/Products/Applications/Pausely.app"
+          INSTALLER_HASH=$(security find-identity -v -p basic 2>/dev/null | grep -i "Installer" | head -1 | awk '{print $2}')
+          if [ -z "$INSTALLER_HASH" ]; then echo "No installer identity in keychain"; exit 1; fi
+          productbuild --component "$APP_PATH" /Applications \
+            --sign "$INSTALLER_HASH" \
+            "$CM_BUILD_DIR/export/Pausely.pkg"
+          ls -la "$CM_BUILD_DIR/export"
+
+      - name: Upload to App Store Connect
+        script: |
+          app-store-connect publish \
+            --path "$CM_BUILD_DIR/export/*.pkg"
+
+    artifacts:
+      - $CM_BUILD_DIR/export/*.pkg
+      - $CM_BUILD_DIR/*.xcarchive
+
+    publishing:
+      email:
+        recipients:
+          - asd95179517@gmail.com
+        notify:
+          success: true
+          failure: true
