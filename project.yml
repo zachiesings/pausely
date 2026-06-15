@@ -4,10 +4,6 @@ options:
   deploymentTarget:
     macOS: "13.0"
   createIntermediateGroups: true
-packages:
-  RevenueCat:
-    url: https://github.com/RevenueCat/purchases-ios
-    from: "5.0.0"
 settings:
   base:
     MARKETING_VERSION: "1.0.0"
@@ -26,8 +22,6 @@ targets:
       - path: Sources
       - path: Resources/Assets.xcassets
       - path: Resources/AppIcon.icns
-    dependencies:
-      - package: RevenueCat
     settings:
       base:
         INFOPLIST_FILE: Resources/Info.plist

@@ -1,61 +1,85 @@
+import StoreKit
 import Foundation
-import RevenueCat
 
-/// Thin wrapper around RevenueCat. The "pro" entitlement unlocks all paid
-/// features across the app. One-time (non-consumable) purchase.
+/// One-time (non-consumable) "Pro" unlock via StoreKit 2 — no third-party SDK.
+/// `productID` must match the In-App Purchase created in App Store Connect.
 @MainActor
 final class Entitlements: ObservableObject {
-    static let entitlementID = "pro"
+    static let productID = "pausely_pro"
 
     @Published private(set) var isPro = false
-    @Published private(set) var offering: Offering?
+    @Published private(set) var product: Product?
     @Published var purchasing = false
     @Published var lastError: String?
 
+    private var updates: Task<Void, Never>?
+
     init() {
-        Purchases.logLevel = .warn
-        Purchases.configure(withAPIKey: Secrets.revenueCatKey)
+        updates = observeTransactions()
         Task {
+            await loadProduct()
             await refresh()
-            await loadOffering()
         }
     }
 
-    var priceText: String {
-        offering?.availablePackages.first?.storeProduct.localizedPriceString ?? ""
+    var priceText: String { product?.displayPrice ?? "" }
+
+    func loadProduct() async {
+        do {
+            product = try await Product.products(for: [Self.productID]).first
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     func refresh() async {
-        if let info = try? await Purchases.shared.customerInfo() {
-            isPro = info.entitlements[Self.entitlementID]?.isActive == true
+        var owned = false
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let t) = result,
+               t.productID == Self.productID,
+               t.revocationDate == nil {
+                owned = true
+            }
         }
-    }
-
-    func loadOffering() async {
-        offering = try? await Purchases.shared.offerings().current
+        isPro = owned
     }
 
     func purchase() async {
-        guard let package = offering?.availablePackages.first else {
+        guard let product else {
             lastError = "Product not available yet. Please try again."
             return
         }
         purchasing = true
         defer { purchasing = false }
         do {
-            let result = try await Purchases.shared.purchase(package: package)
-            isPro = result.customerInfo.entitlements[Self.entitlementID]?.isActive == true
+            let result = try await product.purchase()
+            if case .success(let verification) = result,
+               case .verified(let transaction) = verification {
+                await transaction.finish()
+                await refresh()
+            }
         } catch {
-            lastError = (error as NSError).localizedDescription
+            lastError = error.localizedDescription
         }
     }
 
     func restore() async {
         do {
-            let info = try await Purchases.shared.restorePurchases()
-            isPro = info.entitlements[Self.entitlementID]?.isActive == true
+            try await AppStore.sync()
+            await refresh()
         } catch {
-            lastError = (error as NSError).localizedDescription
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func observeTransactions() -> Task<Void, Never> {
+        Task.detached { [weak self] in
+            for await result in Transaction.updates {
+                if case .verified(let transaction) = result {
+                    await transaction.finish()
+                    await self?.refresh()
+                }
+            }
         }
     }
 }
