@@ -46,7 +46,9 @@ final class Entitlements: ObservableObject {
 
     func purchase() async {
         guard let product else {
-            lastError = "Product not available yet. Please try again."
+            // Product not loaded yet (e.g. the IAP is not available in the review
+            // sandbox). Silently retry loading instead of surfacing an error.
+            await loadProduct()
             return
         }
         purchasing = true
