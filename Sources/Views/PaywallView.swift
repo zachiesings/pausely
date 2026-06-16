@@ -46,9 +46,6 @@ struct PaywallView: View {
             .padding(18)
 
             VStack(spacing: 8) {
-                if let err = model.entitlements.lastError, model.entitlements.product != nil {
-                    Text(err).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                }
                 if model.entitlements.product == nil {
                     Text("In-App Purchases are temporarily unavailable. Please try again later.")
                         .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
