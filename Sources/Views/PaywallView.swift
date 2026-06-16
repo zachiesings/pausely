@@ -2,7 +2,7 @@ import SwiftUI
 
 struct PaywallView: View {
     @EnvironmentObject var model: AppModel
-    @Environment(\.dismiss) private var dismiss
+    var onClose: () -> Void
 
     private var theme: AppTheme { model.settings.theme }
 
@@ -26,7 +26,7 @@ struct PaywallView: View {
                 .padding(.vertical, 22)
                 .background(LinearGradient(colors: theme.gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
 
-                Button { dismiss() } label: {
+                Button { onClose() } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.white.opacity(0.85))
                 }.buttonStyle(.plain).padding(10)
             }
@@ -50,7 +50,7 @@ struct PaywallView: View {
                     Text(err).font(.caption2).foregroundStyle(.red).lineLimit(2)
                 }
                 Button {
-                    Task { await model.entitlements.purchase(); if model.isPro { dismiss() } }
+                    Task { await model.entitlements.purchase(); if model.isPro { onClose() } }
                 } label: {
                     HStack {
                         if model.entitlements.purchasing { ProgressView().controlSize(.small) }
@@ -60,7 +60,7 @@ struct PaywallView: View {
                 .buttonStyle(.borderedProminent).tint(theme.accent).controlSize(.large)
                 .disabled(model.entitlements.purchasing)
 
-                Button("Restore purchase") { Task { await model.entitlements.restore(); if model.isPro { dismiss() } } }
+                Button("Restore purchase") { Task { await model.entitlements.restore(); if model.isPro { onClose() } } }
                     .buttonStyle(.link).font(.caption)
 
                 Text("One-time payment, billed to your App Store account.")
@@ -68,7 +68,7 @@ struct PaywallView: View {
             }
             .padding(.horizontal, 18).padding(.bottom, 16)
         }
-        .frame(width: 340)
+        .frame(maxWidth: .infinity)
     }
 
     private var buyLabel: String {

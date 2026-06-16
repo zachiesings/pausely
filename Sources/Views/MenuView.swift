@@ -10,7 +10,10 @@ struct MenuView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if showSettings {
+            if showPaywall {
+                PaywallView(onClose: { showPaywall = false })
+                    .environmentObject(model)
+            } else if showSettings {
                 SettingsView(onBack: { showSettings = false },
                              showPaywall: { showSettings = false; showPaywall = true })
                     .environmentObject(model)
@@ -19,9 +22,6 @@ struct MenuView: View {
             }
         }
         .frame(width: 320)
-        .sheet(isPresented: $showPaywall) {
-            PaywallView().environmentObject(model)
-        }
     }
 
     private var main: some View {
