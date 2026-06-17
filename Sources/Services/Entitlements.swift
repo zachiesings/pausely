@@ -7,7 +7,7 @@ import Foundation
 final class Entitlements: ObservableObject {
     static let productID = "pausely_pro"
 
-    @Published private(set) var isPro = true  // v1: all features free (IAP returns in a future update)
+    @Published private(set) var isPro = false
     @Published private(set) var product: Product?
     @Published var purchasing = false
     @Published var lastError: String?
@@ -41,7 +41,7 @@ final class Entitlements: ObservableObject {
                 owned = true
             }
         }
-        isPro = true  // v1: free
+        isPro = owned
     }
 
     func purchase() async {
