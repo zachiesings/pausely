@@ -1,0 +1,118 @@
+name: macOS App Store
+
+# Builds + signs the macOS app on a GitHub macOS runner and uploads it to the
+# Mac App Store / TestFlight — using the App Store Connect API key + the shared
+# Apple Distribution & Mac Installer Distribution certs, all in repo secrets.
+# Self-sufficient replacement for the Codemagic pipeline (same codemagic-cli-tools).
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/macos.yml'
+
+env:
+  BUNDLE_ID: app.pausely.Pausely
+  XCODE_PROJECT: Pausely.xcodeproj
+  XCODE_SCHEME: Pausely
+  APP_NAME: Pausely
+  APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+  APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+  APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+  CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
+  INSTALLER_P12_BASE64: ${{ secrets.INSTALLER_P12_BASE64 }}
+  INSTALLER_P12_PASSWORD: ${{ secrets.INSTALLER_P12_PASSWORD }}
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install tools (codemagic-cli-tools + xcodegen)
+        run: |
+          pip3 install --break-system-packages codemagic-cli-tools || pip3 install codemagic-cli-tools
+          which xcodegen || brew install xcodegen
+
+      - name: Generate Xcode project (XcodeGen)
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" || true
+
+      - name: Initialize keychain
+        run: keychain initialize
+
+      - name: Fetch Mac App Store signing files (create if needed)
+        run: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --platform MAC_OS \
+            --type MAC_APP_STORE \
+            --certificate-key "@env:CERTIFICATE_PRIVATE_KEY" \
+            --create
+
+      - name: Ensure Mac Installer Distribution certificate
+        run: |
+          app-store-connect certificates create \
+            --type MAC_INSTALLER_DISTRIBUTION \
+            --certificate-key "@env:CERTIFICATE_PRIVATE_KEY" \
+            --save || echo "Installer certificate already available for this key."
+
+      - name: Add certificates to keychain
+        run: keychain add-certificates
+
+      - name: Set up provisioning profiles
+        run: xcode-project use-profiles
+
+      - name: Archive (Release)
+        run: |
+          BN=$(date +%s)   # epoch → always-increasing CFBundleVersion (> any prior build)
+          echo "Build number: $BN"
+          xcodebuild -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/$APP_NAME.xcarchive" \
+            CURRENT_PROJECT_VERSION=$BN \
+            archive
+
+      - name: Import installer certificate (.p12)
+        run: |
+          set -e
+          echo "$INSTALLER_P12_BASE64" | base64 --decode > /tmp/installer.p12
+          MYKC="$HOME/app-installer.keychain-db"
+          MYPW="installerkc"
+          security create-keychain -p "$MYPW" "$MYKC"
+          security set-keychain-settings -lut 21600 "$MYKC"
+          security unlock-keychain -p "$MYPW" "$MYKC"
+          security import /tmp/installer.p12 -k "$MYKC" -P "$INSTALLER_P12_PASSWORD" -A -T /usr/bin/productbuild -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MYPW" "$MYKC"
+          EXISTING=$(security list-keychains -d user | sed 's/[" ]//g' | tr '\n' ' ')
+          security list-keychains -d user -s "$MYKC" $EXISTING
+          security find-identity -v -p basic "$MYKC" || true
+
+      - name: Build signed installer .pkg (productbuild)
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/export"
+          APP_PATH="$RUNNER_TEMP/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app"
+          INSTALLER_HASH=$(security find-identity -v -p basic 2>/dev/null | grep -i "Installer" | head -1 | awk '{print $2}')
+          if [ -z "$INSTALLER_HASH" ]; then echo "No installer identity in keychain"; exit 1; fi
+          productbuild --component "$APP_PATH" /Applications \
+            --sign "$INSTALLER_HASH" \
+            "$RUNNER_TEMP/export/$APP_NAME.pkg"
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Upload to App Store Connect
+        run: app-store-connect publish --path "$RUNNER_TEMP/export/*.pkg"
+
+      - name: Save artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-pkg
+          path: ${{ runner.temp }}/export/*.pkg
+          if-no-files-found: ignore
